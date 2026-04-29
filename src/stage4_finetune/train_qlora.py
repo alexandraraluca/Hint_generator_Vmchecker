@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -86,37 +87,57 @@ def main() -> int:
         print("\n[dry-run] data pipeline OK; exiting without loading base model.")
         return 0
 
-    # ---- base model + 4-bit quantization ----
+    # ---- base model load ----
+    # gpt-oss-20b este DEJA pre-quantizat în MXFP4 (~10 GB pe disc).
+    # Adăugarea unui strat BnB 4-bit peste MXFP4 generează conflict la load
+    # (`merge_quantization_configs` crapă), așa că lăsăm modelul așa cum este
+    # și folosim `torch_dtype="auto"` pentru a respecta quantizarea originală.
+    # Pentru modele non-quantizate (de ex. dacă schimbi `base_model`), poți
+    # reactiva BnB punând `use_4bit: true` și un dtype valid.
     import torch
     from transformers import (
         AutoModelForCausalLM,
-        BitsAndBytesConfig,
         DataCollatorForSeq2Seq,
         Trainer,
         TrainingArguments,
     )
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-    bnb_dtype = (
-        torch.bfloat16
-        if cfg["model"]["bnb_4bit_compute_dtype"] == "bfloat16"
-        else torch.float16
-    )
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=cfg["model"]["use_4bit"],
-        bnb_4bit_quant_type=cfg["model"]["bnb_4bit_quant_type"],
-        bnb_4bit_compute_dtype=bnb_dtype,
-        bnb_4bit_use_double_quant=True,
-    )
-    print(f"loading base model {cfg['model']['base_model']} in 4-bit")
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg["model"]["base_model"],
-        quantization_config=bnb_config,
-        device_map="auto",
-        attn_implementation=cfg["model"]["attn_implementation"],
-        trust_remote_code=True,
-    )
+    base = cfg["model"]["base_model"]
+    use_4bit = bool(cfg["model"].get("use_4bit", False))
+    is_pre_quantized = "gpt-oss" in base.lower()
+
+    load_kwargs: dict[str, Any] = {
+        "device_map": "auto",
+        "attn_implementation": cfg["model"]["attn_implementation"],
+        "trust_remote_code": True,
+    }
+
+    if is_pre_quantized:
+        # MXFP4 nativ; nu suprapunem alt quantizer
+        load_kwargs["torch_dtype"] = "auto"
+        print(f"loading base model {base} (native MXFP4, no extra BnB)")
+    elif use_4bit:
+        from transformers import BitsAndBytesConfig
+        bnb_dtype = (
+            torch.bfloat16
+            if cfg["model"]["bnb_4bit_compute_dtype"] == "bfloat16"
+            else torch.float16
+        )
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type=cfg["model"]["bnb_4bit_quant_type"],
+            bnb_4bit_compute_dtype=bnb_dtype,
+            bnb_4bit_use_double_quant=True,
+        )
+        print(f"loading base model {base} in 4-bit (BnB NF4)")
+    else:
+        load_kwargs["torch_dtype"] = torch.bfloat16
+        print(f"loading base model {base} in bfloat16")
+
+    model = AutoModelForCausalLM.from_pretrained(base, **load_kwargs)
     model.config.use_cache = False
+    # `prepare_model_for_kbit_training` merge atât pentru MXFP4 cât și pentru BnB
     model = prepare_model_for_kbit_training(model)
 
     # ---- LoRA adapter ----

@@ -53,21 +53,26 @@ class HintGenerator:
             "base_model": "openai/gpt-oss-20b"
         }
         from peft import PeftModel
-        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+        from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
 
-        bnb = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-        base = AutoModelForCausalLM.from_pretrained(
-            manifest["base_model"],
-            quantization_config=bnb,
-            device_map="auto",
-            trust_remote_code=True,
-        )
+        base_name = manifest["base_model"]
+        load_kwargs: dict = {
+            "device_map": "auto",
+            "trust_remote_code": True,
+        }
+        if "gpt-oss" in base_name.lower():
+            # respectă MXFP4-ul nativ
+            load_kwargs["torch_dtype"] = "auto"
+        else:
+            from transformers import BitsAndBytesConfig
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+            )
+        base = AutoModelForCausalLM.from_pretrained(base_name, **load_kwargs)
         self._model = PeftModel.from_pretrained(base, str(self.adapter_dir))
         self._model.eval()
         self._tokenizer = AutoTokenizer.from_pretrained(
