@@ -14,7 +14,7 @@
 model:
   base_model: mistralai/Mistral-7B-Instruct-v0.3
   load_kind: auto
-  use_4bit: true
+  use_4bit: false
   # Doar modelele Harmony (ex. gpt-oss) acceptă acest câmp; pentru Mistral e filtrat automat.
   reasoning_effort: low
   bnb_4bit_quant_type: nf4
