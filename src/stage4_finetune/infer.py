@@ -2,7 +2,7 @@
 
 Usage:
     python -m src.stage4_finetune.infer \
-        --adapter-dir models/mistral7b_instruct_pa_hints \
+        --adapter-dir app/mistral7b_instruct_pa_hints \
         --problem-id 2024_tema1_oferta \
         --code path/to/failing.cpp \
         [--num-hints 3]
@@ -51,20 +51,26 @@ class HintGenerator:
         if self._model is not None:
             return
         manifest_p = self.adapter_dir / "manifest.json"
-        if manifest_p.exists():
-            manifest = json.loads(manifest_p.read_text(encoding="utf-8"))
-        else:
-            manifest = {
-                "base_model": "openai/gpt-oss-20b",
-                "load_kind": "auto",
-            }
+        if not manifest_p.is_file():
+            raise FileNotFoundError(
+                f"manifest.json lipsește în {self.adapter_dir.resolve()}. "
+                "Setează „Adapter dir” la folderul care conține manifest.json, "
+                "adapter_config.json și adapter_model.safetensors."
+            )
+        manifest = json.loads(manifest_p.read_text(encoding="utf-8"))
+        if not manifest.get("base_model"):
+            raise ValueError(
+                f"manifest.json din {self.adapter_dir.resolve()} nu definește „base_model”."
+            )
         from peft import PeftModel
         from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
 
         model_cfg = model_cfg_from_manifest(manifest)
         base_name = model_cfg["base_model"]
-        _, load_kwargs = build_base_load_kwargs(model_cfg, torch_module=torch)
+        _, load_kwargs = build_base_load_kwargs(
+            model_cfg, torch_module=torch, inference=True
+        )
         base = AutoModelForCausalLM.from_pretrained(base_name, **load_kwargs)
         self._model = PeftModel.from_pretrained(base, str(self.adapter_dir))
         self._model.eval()
@@ -171,7 +177,7 @@ class HintGenerator:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--adapter-dir", type=Path, default=Path("models/mistral7b_instruct_pa_hints")
+        "--adapter-dir", type=Path, default=Path("app/mistral7b_instruct_pa_hints")
     )
     parser.add_argument("--problem-id", required=True)
     parser.add_argument("--code", type=Path, required=True, help="path to failing source file")

@@ -145,10 +145,12 @@ def main() -> None:
                 "**Fine-tuned** încarcă adapter-ul Stage 4. Necesită CUDA."
             ),
         )
-        adapter_dir = st.text_input(
+        adapter_dir_input = st.text_input(
             "Adapter dir",
-            value="models/mistral7b_instruct_pa_hints",
+            value="app/mistral7b_instruct_pa_hints",
             disabled=backend_choice == "Ollama (base)",
+            help="Cale relativă la rădăcina repo-ului sau cale absolută către folderul cu "
+            "manifest.json și greutățile LoRA.",
         )
         temperature = st.slider("Temperature", 0.0, 1.0, 0.4, 0.05)
 
@@ -162,7 +164,21 @@ def main() -> None:
         st.info("Adaugă un cod (din sidebar) ca să primești hinturi.")
         return
 
-    request_key = (problem_id, hash(failing_code), backend_choice, temperature)
+    adapter_path_for_key = ""
+    if backend_choice != "Ollama (base)":
+        _raw_ad = (adapter_dir_input or "").strip()
+        _p_ad = Path(_raw_ad)
+        if _raw_ad and not _p_ad.is_absolute():
+            _p_ad = (ROOT / _p_ad).resolve()
+        adapter_path_for_key = str(_p_ad) if _raw_ad else ""
+
+    request_key = (
+        problem_id,
+        hash(failing_code),
+        backend_choice,
+        temperature,
+        adapter_path_for_key,
+    )
     new_request = request_key != st.session_state.last_request_key
 
     col_btn, col_status = st.columns([1, 3])
@@ -178,18 +194,37 @@ def main() -> None:
             n = len(st.session_state.hints)
             st.success(
                 f"Set existent: {n} hinturi, {st.session_state.revealed}/{n} dezvăluite. "
-                "Apasă „Reset" în sidebar pentru un set nou."
+                'Apasă „Reset" în sidebar pentru un set nou.'
             )
 
     if gen_clicked:
+        adapter_resolved: str | None = None
+        if backend_choice != "Ollama (base)":
+            raw = (adapter_dir_input or "").strip()
+            if not raw:
+                st.error("Eroare la folosirea fine-tuned adapter")
+                with st.expander("Detalii tehnice"):
+                    st.code("Completează câmpul „Adapter dir” în sidebar.")
+                return
+            p = Path(raw)
+            if not p.is_absolute():
+                p = (ROOT / p).resolve()
+            adapter_resolved = str(p)
+
         try:
             backend: HintBackend
             if backend_choice == "Ollama (base)":
                 backend = get_ollama_backend(temperature)
             else:
-                backend = get_adapter_backend(adapter_dir)
+                assert adapter_resolved is not None
+                backend = get_adapter_backend(adapter_resolved)
         except Exception as e:  # noqa: BLE001
-            st.error(f"Backend indisponibil: {e}")
+            if backend_choice == "Ollama (base)":
+                st.error(f"Backend indisponibil: {e}")
+            else:
+                st.error("Eroare la folosirea fine-tuned adapter")
+                with st.expander("Detalii tehnice"):
+                    st.code(str(e))
             return
 
         with st.spinner("Modelul generează hinturile (poate dura 30-60s)..."):
@@ -201,7 +236,12 @@ def main() -> None:
                     issues=issues,
                 )
             except Exception as e:  # noqa: BLE001
-                st.error(f"Eroare la generare: {e}")
+                if backend_choice == "Ollama (base)":
+                    st.error(f"Eroare la generare: {e}")
+                else:
+                    st.error("Eroare la folosirea fine-tuned adapter")
+                    with st.expander("Detalii tehnice"):
+                        st.code(str(e))
                 return
         st.session_state.hints = result.get("hints", [])
         st.session_state.revealed = 1 if st.session_state.hints else 0

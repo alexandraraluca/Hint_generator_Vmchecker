@@ -9,6 +9,7 @@ Keep new models configurable via YAML `model.load_kind` and `model.use_4bit`:
 
 from __future__ import annotations
 
+import os
 from enum import Enum
 from typing import Any
 
@@ -47,8 +48,15 @@ def build_base_load_kwargs(
     model_cfg: dict[str, Any],
     *,
     torch_module: Any,
+    inference: bool = False,
 ) -> tuple[BaseLoadKind, dict[str, Any]]:
-    """Return ``(kind, kwargs)`` for ``AutoModelForCausalLM.from_pretrained``."""
+    """Return ``(kind, kwargs)`` for ``AutoModelForCausalLM.from_pretrained``.
+
+    When ``inference=True`` and load kind is bf16, ``device_map`` defaults to a
+    *single* device (``cuda:0`` or ``cpu``) instead of ``"auto"``. Accelerate's
+    ``"auto"`` can spill weights to CPU/disk and leave modules on ``meta``, which
+    breaks ``PeftModel`` state-dict loading (LoRA becomes a no-op).
+    """
     kind = resolve_base_load_kind(model_cfg)
     kwargs: dict[str, Any] = {
         "device_map": "auto",
@@ -75,7 +83,26 @@ def build_base_load_kwargs(
             bnb_4bit_use_double_quant=True,
         )
     else:
-        kwargs["torch_dtype"] = torch_module.bfloat16
+        kwargs["dtype"] = torch_module.bfloat16
+
+    if inference:
+        raw_dm = os.environ.get("PA_INFER_DEVICE_MAP", "").strip()
+        if not raw_dm:
+            raw_dm = str(model_cfg.get("inference_device_map", "") or "").strip()
+        if raw_dm == "auto":
+            kwargs["device_map"] = "auto"
+        elif raw_dm in ("cpu", "cpu:0"):
+            kwargs["device_map"] = {"": "cpu"}
+        elif raw_dm.startswith("cuda") or raw_dm.isdigit():
+            dev = raw_dm if raw_dm.startswith("cuda") else f"cuda:{raw_dm}"
+            kwargs["device_map"] = {"": dev}
+        elif raw_dm:
+            kwargs["device_map"] = raw_dm
+        elif kind == BaseLoadKind.BF16:
+            if torch_module.cuda.is_available():
+                kwargs["device_map"] = {"": "cuda:0"}
+            else:
+                kwargs["device_map"] = {"": "cpu"}
 
     return kind, kwargs
 
@@ -92,6 +119,8 @@ def model_cfg_from_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     }
     if "attn_implementation" in manifest:
         cfg["attn_implementation"] = manifest["attn_implementation"]
+    if "inference_device_map" in manifest:
+        cfg["inference_device_map"] = manifest["inference_device_map"]
 
     if str(load_kind).lower() == BaseLoadKind.AUTO.value:
         cfg["use_4bit"] = manifest.get(

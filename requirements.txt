@@ -39,6 +39,8 @@ jsonschema>=4.22
 # torch and unsloth are best installed via their own instructions per platform.
 # We declare transformers/peft here for tooling.
 transformers>=4.44
+# Streamlit's file watcher can import transformers vision stubs → torchvision
+torchvision>=0.18
 peft>=0.12
 accelerate>=0.34
 bitsandbytes>=0.43; platform_system != "Windows"
