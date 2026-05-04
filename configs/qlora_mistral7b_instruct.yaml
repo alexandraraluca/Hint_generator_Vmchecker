@@ -1,15 +1,16 @@
-# QLoRA — Mistral 7B Instruct (cluster / A100 friendly).
+# LoRA fine-tuning — Mistral 7B Instruct (bf16, fără bitsandbytes obligatoriu).
 #
-# Hugging Face nu are un checkpoint „Ministral-7B”; familia Ministral e 3B/8B.
-# Acest fișier folosește instruct 7B standard (Apache 2.0). Pentru Ministral-8B
-# înlocuiește base_model cu: mistralai/Ministral-8B-Instruct-2410
-# (poate cere `huggingface-cli login` după licență).
+# Cu `use_4bit: false` și `optim: adamw_torch` rulezi fără BnB (optim 8-bit / NF4).
+# Pentru QLoRA (NF4) pune `use_4bit: true`, `optim: paged_adamw_8bit` și BnB CUDA ok.
+#
+# Hugging Face nu are „Ministral-7B”; familia Ministral e 3B/8B. Instruct 7B:
+# mistralai/Mistral-7B-Instruct-v0.3. Ministral-8B: mistralai/Ministral-8B-Instruct-2410.
 #
 # Usage:
-#   python -m src.stage4_finetune.train_qlora --config configs/qlora_mistral7b_instruct.yaml
 #   python -m src.stage4_finetune.train_qlora --config configs/qlora_mistral7b_instruct.yaml --dry-run
+#   python -m src.stage4_finetune.train_qlora --config configs/qlora_mistral7b_instruct.yaml
 #
-# Dacă `sdpa` dă eroare pe stack-ul de pe cluster, pune attn_implementation: eager.
+# Dacă `sdpa` dă eroare pe cluster: attn_implementation: eager.
 
 model:
   base_model: mistralai/Mistral-7B-Instruct-v0.3
@@ -47,7 +48,7 @@ train:
   lr_scheduler_type: cosine
   warmup_ratio: 0.03
   weight_decay: 0.01
-  optim: paged_adamw_8bit
+  optim: adamw_torch
   max_grad_norm: 1.0
   bf16: true
   logging_steps: 5

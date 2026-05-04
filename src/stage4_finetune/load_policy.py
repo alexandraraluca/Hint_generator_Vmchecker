@@ -49,8 +49,6 @@ def build_base_load_kwargs(
     torch_module: Any,
 ) -> tuple[BaseLoadKind, dict[str, Any]]:
     """Return ``(kind, kwargs)`` for ``AutoModelForCausalLM.from_pretrained``."""
-    from transformers import BitsAndBytesConfig
-
     kind = resolve_base_load_kind(model_cfg)
     kwargs: dict[str, Any] = {
         "device_map": "auto",
@@ -63,6 +61,8 @@ def build_base_load_kwargs(
     if kind == BaseLoadKind.GPT_OSS_MXFP4:
         kwargs["torch_dtype"] = "auto"
     elif kind == BaseLoadKind.BNB_4BIT:
+        from transformers import BitsAndBytesConfig
+
         bnb_dtype = (
             torch_module.bfloat16
             if model_cfg.get("bnb_4bit_compute_dtype", "bfloat16") == "bfloat16"

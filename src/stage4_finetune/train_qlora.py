@@ -6,6 +6,10 @@ Usage:
 
 ``--dry-run`` builds the dataset only (no big GPU model download).
 
+For bf16 training (``use_4bit: false``) we skip ``prepare_model_for_kbit_training``
+so PEFT uses standard LoRA without importing bitsandbytes; use ``adamw_torch`` for
+the optimizer unless you have a CUDA-enabled bitsandbytes build.
+
 Outputs go to ``train.output_dir`` from the YAML (adapter + tokenizer + manifest).
 """
 
@@ -105,7 +109,12 @@ def main() -> int:
         **load_kwargs,
     )
     model.config.use_cache = False
-    model = prepare_model_for_kbit_training(model)
+    # `prepare_model_for_kbit_training` marks modules in a way that makes PEFT
+    # route LoRA through bitsandbytes; only use it for quantized / MXFP4 bases.
+    if kind in (BaseLoadKind.GPT_OSS_MXFP4, BaseLoadKind.BNB_4BIT):
+        model = prepare_model_for_kbit_training(model)
+    elif cfg["train"].get("gradient_checkpointing"):
+        model.enable_input_require_grads()
 
     lora_cfg = LoraConfig(
         r=cfg["lora"]["r"],

@@ -39,7 +39,8 @@ train:
   lr_scheduler_type: cosine
   warmup_ratio: 0.03
   weight_decay: 0.01
-  optim: paged_adamw_8bit
+  # adamw_torch evită bitsandbytes; pe T4 16GB dacă face OOM la optim, încearcă paged_adamw_8bit cu BnB CUDA.
+  optim: adamw_torch
   max_grad_norm: 1.0
   bf16: true
   logging_steps: 5
