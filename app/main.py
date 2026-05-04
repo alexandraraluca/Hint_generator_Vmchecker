@@ -147,7 +147,7 @@ def main() -> None:
         )
         adapter_dir = st.text_input(
             "Adapter dir",
-            value="models/gpt_oss_20b_pa_hints",
+            value="models/mistral7b_instruct_pa_hints",
             disabled=backend_choice == "Ollama (base)",
         )
         temperature = st.slider("Temperature", 0.0, 1.0, 0.4, 0.05)

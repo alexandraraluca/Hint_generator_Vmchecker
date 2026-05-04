@@ -61,7 +61,7 @@ input: cod_student + problem_id [+ anon_id]
 | 1     | Curățare, linking, dataset canonic, EDA + grafice | ✅ done |
 | 2     | Adnotare: probleme, DAG concepte, taxonomie erori, etichete teste | ✅ done (35/36 valid) |
 | 3     | Generare hinturi (silver-diff + LLM-bootstrap) + validator | ✅ done (489 valid, 87% rate) |
-| 4     | Fine-tuning `gpt-oss:20b` (QLoRA) — scaffold + dry-run | ✅ scaffold ready, training pe GPU |
+| 4     | Fine-tuning QLoRA (implicit `Mistral-7B-Instruct-v0.3`) | ✅ train + infer modular |
 | 5     | Demo Streamlit interactiv (gradual hint reveal) | ✅ done |
 | 6     | Evaluare automată + studiu uman + ablation | pending |
 | 7     | Variantă RAG (opțional, dacă există timp) | pending |
@@ -82,7 +82,7 @@ licenta_vmchecker/
 │   ├── stage1_data/         # extracție, parsing, EDA
 │   ├── stage2_annotation/   # adnotare semi-automată
 │   ├── stage3_hints/        # diff hints + LLM bootstrap + validator
-│   ├── stage4_finetune/     # QLoRA pe gpt-oss:20b
+│   ├── stage4_finetune/     # QLoRA (YAML + load_policy multi-model)
 │   └── common/              # utilitare, schema, prompt-uri
 ├── app/                     # Streamlit demo
 ├── notebooks/               # explorări ad-hoc
@@ -124,8 +124,9 @@ python -m src.stage3_hints.assemble_dataset
 python -m src.stage3_hints.eda_plots
 
 # 7. Stage 4 — fine-tuning (CUDA recomandat; dry-run merge pe CPU)
-python -m src.stage4_finetune.train_qlora --config configs/qlora.yaml --dry-run
-python -m src.stage4_finetune.train_qlora --config configs/qlora.yaml   # GPU only
+python -m src.stage4_finetune.train_qlora --config configs/qlora_mistral7b_instruct.yaml --dry-run
+python -m src.stage4_finetune.train_qlora --config configs/qlora_mistral7b_instruct.yaml   # GPU
+# Legacy: openai/gpt-oss-20b — configs/qlora.yaml
 # shortcut Colab: notebook-ready flow in notebooks/colab_stage4_train_qlora.ipynb
 
 # 8. Stage 5 — demo interactiv (necesită Ollama up)

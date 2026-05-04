@@ -11,10 +11,14 @@
 
 model:
   base_model: openai/gpt-oss-20b
+  # auto | gpt_oss_mxfp4 | bnb_4bit | bf16 — auto infers from base_model + use_4bit
+  load_kind: auto
   # gpt-oss-20b is shipped pre-quantized in MXFP4. We do NOT add BnB on top
   # (causes `merge_quantization_configs` errors). For non-MXFP4 base models
   # set use_4bit: true to enable BnB NF4.
   use_4bit: false
+  # Harmony / gpt-oss only; stripped automatically for other chat templates.
+  reasoning_effort: low
   bnb_4bit_quant_type: nf4
   bnb_4bit_compute_dtype: bfloat16
   attn_implementation: eager   # MoE+flash_attn este experimental; eager e mai stabil

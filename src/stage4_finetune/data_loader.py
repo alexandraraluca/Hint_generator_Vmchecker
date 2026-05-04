@@ -1,20 +1,11 @@
-"""Stage 4 - chat-format dataset loader for `openai/gpt-oss-20b`.
+"""Stage 4 — chat-format dataset for instruction-tuned fine-tuning.
 
 Each Stage 3 example has shape:
     {"system": str, "user": str, "assistant": str, "meta": {...}}
 
-This module turns it into a HuggingFace `Dataset` of token IDs ready for
-SFTTrainer / Trainer, applying the model's *harmony* chat template.
-
-Why a custom loader:
-- gpt-oss uses the harmony response format (`<|return|>` etc.). Using
-  `tokenizer.apply_chat_template` automatically wires the special tokens
-  in the right places, so we never hardcode them.
-- We mask the loss on system + user tokens (assistant-only loss), which is
-  the standard SFT pattern. This is implemented by zeroing the `labels`
-  tensor on prompt tokens (set to -100).
-- We also expose a `format_for_inference()` helper so inference uses the
-  same chat-template as training (no train/inference skew).
+We use ``tokenizer.apply_chat_template`` so special tokens stay correct for each
+base model; optional kwargs (e.g. Harmony ``reasoning_effort``) are passed only
+if the tokenizer supports them — see ``chat_template_utils.apply_chat_template_safe``.
 """
 
 from __future__ import annotations
@@ -23,8 +14,9 @@ from pathlib import Path
 from typing import Any
 
 from src.common.io_utils import read_jsonl
+from src.stage4_finetune.chat_template_utils import apply_chat_template_safe
 
-DEFAULT_REASONING_EFFORT = "low"  # mai rapid; rubrica nu cere CoT lung
+DEFAULT_REASONING_EFFORT = "low"
 
 
 def example_to_messages(ex: dict[str, Any]) -> list[dict[str, str]]:
@@ -52,14 +44,12 @@ def _ids_from_template_output(out: Any) -> list[int]:
     """
     if isinstance(out, list):
         if out and not isinstance(out[0], int):
-            # list[Encoding]
             first = out[0]
             if hasattr(first, "ids"):
                 return list(first.ids)
             if hasattr(first, "input_ids"):
                 return list(first.input_ids)
         return list(out)
-    # `BatchEncoding` is a dict-like; treat it as a dict
     try:
         if "input_ids" in out:
             ids = out["input_ids"]
@@ -79,9 +69,7 @@ def build_dataset(
     max_seq_length: int = 2048,
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
 ):
-    """Return (train_ds, val_ds) of HuggingFace `Dataset` with `input_ids`,
-    `attention_mask`, `labels` (assistant-only loss masking).
-    """
+    """Return (train_ds, val_ds) with `input_ids`, `attention_mask`, `labels`."""
     from datasets import Dataset
 
     def _encode(ex: dict[str, Any]) -> dict[str, Any]:
@@ -89,7 +77,8 @@ def build_dataset(
         full_msgs = example_to_messages(ex)
 
         prompt_ids = _ids_from_template_output(
-            tokenizer.apply_chat_template(
+            apply_chat_template_safe(
+                tokenizer,
                 prompt_msgs,
                 add_generation_prompt=True,
                 tokenize=True,
@@ -97,7 +86,8 @@ def build_dataset(
             )
         )
         full_ids = _ids_from_template_output(
-            tokenizer.apply_chat_template(
+            apply_chat_template_safe(
+                tokenizer,
                 full_msgs,
                 add_generation_prompt=False,
                 tokenize=True,
@@ -112,7 +102,7 @@ def build_dataset(
 
         labels = list(full_ids)
         for i in range(min(len(prompt_ids), len(labels))):
-            labels[i] = -100  # mask system+user tokens
+            labels[i] = -100
 
         attention_mask = [1] * len(full_ids)
         return {
@@ -139,14 +129,13 @@ def format_for_inference(
     user_prompt: str,
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
 ) -> dict[str, Any]:
-    """Apply the chat template to produce input_ids ready for `model.generate`.
-    Returns a dict that can be unpacked into `model.generate(**inputs)`.
-    """
+    """``input_ids`` / attention tensors for ``model.generate`` (train/infer aligned)."""
     msgs = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
-    return tokenizer.apply_chat_template(
+    return apply_chat_template_safe(
+        tokenizer,
         msgs,
         add_generation_prompt=True,
         tokenize=True,

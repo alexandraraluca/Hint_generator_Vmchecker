@@ -1,36 +1,25 @@
-"""Stage 4 - QLoRA fine-tuning of `openai/gpt-oss-20b` on PA hint data.
+"""Stage 4 — QLoRA fine-tuning of a chat base model on PA hint data.
 
 Usage:
-    python -m src.stage4_finetune.train_qlora --config configs/qlora.yaml
+    python -m src.stage4_finetune.train_qlora --config configs/qlora_mistral7b_instruct.yaml
     python -m src.stage4_finetune.train_qlora --config configs/qlora.yaml --dry-run
 
-The `--dry-run` mode loads the config, the tokenizer, builds the dataset,
-prints shape info, and exits **without loading the 20B base model**. Use
-it to validate the data pipeline on a CPU-only machine.
+``--dry-run`` builds the dataset only (no big GPU model download).
 
-Real training requires a GPU (T4 ~16 GB minimum with seq_len=2048 + grad
-checkpointing). On consumer 24 GB cards (RTX 3090/4090) increase
-`max_seq_length` to 4096 if needed.
-
-Outputs:
-    models/gpt_oss_20b_pa_hints/
-    ├── adapter_config.json     (PEFT)
-    ├── adapter_model.safetensors
-    ├── tokenizer/              (saved alongside for self-contained loading)
-    └── trainer_state.json
+Outputs go to ``train.output_dir`` from the YAML (adapter + tokenizer + manifest).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from src.stage4_finetune.data_loader import build_dataset
+from src.stage4_finetune.data_loader import DEFAULT_REASONING_EFFORT, build_dataset
+from src.stage4_finetune.load_policy import BaseLoadKind, build_base_load_kwargs
 
 
 def _load_config(p: Path) -> dict:
@@ -51,15 +40,22 @@ def _print_dataset_summary(ds, name: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, default=Path("configs/qlora.yaml"))
-    parser.add_argument("--dry-run", action="store_true",
-                        help="check data pipeline, do not load base model")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/qlora_mistral7b_instruct.yaml"),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="check data pipeline, do not load base model",
+    )
     args = parser.parse_args()
 
     cfg = _load_config(args.config)
 
-    # ---- tokenizer (small download) ----
     from transformers import AutoTokenizer
+
     print(f"loading tokenizer from {cfg['model']['base_model']}")
     tokenizer = AutoTokenizer.from_pretrained(
         cfg["model"]["base_model"],
@@ -69,7 +65,6 @@ def main() -> int:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # ---- data ----
     train_path = Path(cfg["data"]["train_path"])
     val_path = Path(cfg["data"]["val_path"])
     print(f"building dataset (max_seq={cfg['data']['max_seq_length']})")
@@ -78,6 +73,7 @@ def main() -> int:
         val_path=val_path,
         tokenizer=tokenizer,
         max_seq_length=cfg["data"]["max_seq_length"],
+        reasoning_effort=str(cfg["model"].get("reasoning_effort", DEFAULT_REASONING_EFFORT)),
     )
     print("dataset summary:")
     _print_dataset_summary(train_ds, "train")
@@ -87,13 +83,6 @@ def main() -> int:
         print("\n[dry-run] data pipeline OK; exiting without loading base model.")
         return 0
 
-    # ---- base model load ----
-    # gpt-oss-20b este DEJA pre-quantizat în MXFP4 (~10 GB pe disc).
-    # Adăugarea unui strat BnB 4-bit peste MXFP4 generează conflict la load
-    # (`merge_quantization_configs` crapă), așa că lăsăm modelul așa cum este
-    # și folosim `torch_dtype="auto"` pentru a respecta quantizarea originală.
-    # Pentru modele non-quantizate (de ex. dacă schimbi `base_model`), poți
-    # reactiva BnB punând `use_4bit: true` și un dtype valid.
     import torch
     from transformers import (
         AutoModelForCausalLM,
@@ -103,44 +92,21 @@ def main() -> int:
     )
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-    base = cfg["model"]["base_model"]
-    use_4bit = bool(cfg["model"].get("use_4bit", False))
-    is_pre_quantized = "gpt-oss" in base.lower()
-
-    load_kwargs: dict[str, Any] = {
-        "device_map": "auto",
-        "attn_implementation": cfg["model"]["attn_implementation"],
-        "trust_remote_code": True,
-    }
-
-    if is_pre_quantized:
-        # MXFP4 nativ; nu suprapunem alt quantizer
-        load_kwargs["torch_dtype"] = "auto"
-        print(f"loading base model {base} (native MXFP4, no extra BnB)")
-    elif use_4bit:
-        from transformers import BitsAndBytesConfig
-        bnb_dtype = (
-            torch.bfloat16
-            if cfg["model"]["bnb_4bit_compute_dtype"] == "bfloat16"
-            else torch.float16
-        )
-        load_kwargs["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type=cfg["model"]["bnb_4bit_quant_type"],
-            bnb_4bit_compute_dtype=bnb_dtype,
-            bnb_4bit_use_double_quant=True,
-        )
-        print(f"loading base model {base} in 4-bit (BnB NF4)")
+    kind, load_kwargs = build_base_load_kwargs(cfg["model"], torch_module=torch)
+    if kind == BaseLoadKind.GPT_OSS_MXFP4:
+        print(f"loading base model {cfg['model']['base_model']} (native MXFP4, no extra BnB)")
+    elif kind == BaseLoadKind.BNB_4BIT:
+        print(f"loading base model {cfg['model']['base_model']} in 4-bit (BnB NF4)")
     else:
-        load_kwargs["torch_dtype"] = torch.bfloat16
-        print(f"loading base model {base} in bfloat16")
+        print(f"loading base model {cfg['model']['base_model']} in bfloat16")
 
-    model = AutoModelForCausalLM.from_pretrained(base, **load_kwargs)
+    model = AutoModelForCausalLM.from_pretrained(
+        cfg["model"]["base_model"],
+        **load_kwargs,
+    )
     model.config.use_cache = False
-    # `prepare_model_for_kbit_training` merge atât pentru MXFP4 cât și pentru BnB
     model = prepare_model_for_kbit_training(model)
 
-    # ---- LoRA adapter ----
     lora_cfg = LoraConfig(
         r=cfg["lora"]["r"],
         lora_alpha=cfg["lora"]["alpha"],
@@ -155,7 +121,7 @@ def main() -> int:
     print(f"LoRA trainable params: {trainable:,} / {total:,} "
           f"({100 * trainable / total:.3f}%)")
 
-    # ---- training args ----
+    mc = cfg["model"]
     out = Path(cfg["train"]["output_dir"])
     out.mkdir(parents=True, exist_ok=True)
     targs = TrainingArguments(
@@ -196,18 +162,27 @@ def main() -> int:
 
     print("saving adapter + tokenizer")
     trainer.save_model(str(out))
-    tokenizer.save_pretrained(str(out / "tokenizer"))
+    tokenizer.save_pretrained(out / "tokenizer")
 
-    # write a small manifest so inference knows what's what
-    manifest = {
-        "base_model": cfg["model"]["base_model"],
+    manifest: dict[str, Any] = {
+        "base_model": mc["base_model"],
+        "load_kind": kind.value,
+        "use_4bit": kind == BaseLoadKind.BNB_4BIT,
         "adapter_dir": str(out),
         "max_seq_length": cfg["data"]["max_seq_length"],
+        "reasoning_effort": str(mc.get("reasoning_effort", DEFAULT_REASONING_EFFORT)),
         "trained_on": {
             "train": str(train_path),
             "val": str(val_path),
         },
     }
+    if mc.get("bnb_4bit_quant_type"):
+        manifest["bnb_4bit_quant_type"] = mc["bnb_4bit_quant_type"]
+    if mc.get("bnb_4bit_compute_dtype"):
+        manifest["bnb_4bit_compute_dtype"] = mc["bnb_4bit_compute_dtype"]
+    if mc.get("attn_implementation"):
+        manifest["attn_implementation"] = mc["attn_implementation"]
+
     with open(out / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
     print(f"done. adapter at {out}")

@@ -6,8 +6,9 @@ doesn't need to know which one is active:
   - `OllamaBackend`   uses raw `gpt-oss:20b` via Ollama with the rubric-prompt.
                       Works without GPU. Slower (~50 s/call) but always
                       available as long as `ollama serve` is running.
-  - `AdapterBackend`  uses the LoRA adapter from Stage 4 over the HF base
-                      model in 4-bit. Requires GPU + bitsandbytes; produces
+  - `AdapterBackend`  uses the Stage 4 LoRA adapter over the HF base in manifest
+                      (4-bit BnB or native MXFP4 for gpt-oss). GPU + bitsandbytes
+                      typically required; produces
                       faster, more rubric-compliant hints.
 
 Both return the same dict structure:
@@ -131,7 +132,7 @@ class OllamaBackend:
 
 
 class AdapterBackend:
-    name = "Fine-tuned adapter (gpt-oss-20b + LoRA)"
+    name = "Fine-tuned adapter (HF base + LoRA, manifest-driven)"
 
     def __init__(self, adapter_dir: Path | str) -> None:
         from src.stage4_finetune.infer import HintGenerator

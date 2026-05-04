@@ -2,7 +2,7 @@
 
 Usage:
     python -m src.stage4_finetune.infer \
-        --adapter-dir models/gpt_oss_20b_pa_hints \
+        --adapter-dir models/mistral7b_instruct_pa_hints \
         --problem-id 2024_tema1_oferta \
         --code path/to/failing.cpp \
         [--num-hints 3]
@@ -23,6 +23,8 @@ from src.common.io_utils import read_json
 from src.common.paths import ANNOTATIONS_DIR, PROCESSED_DIR
 from src.stage3_hints.prompt_builder import build_system_prompt, build_user_prompt
 from src.stage3_hints.validator import HintValidator
+from src.stage4_finetune.data_loader import DEFAULT_REASONING_EFFORT
+from src.stage4_finetune.load_policy import build_base_load_kwargs, model_cfg_from_manifest
 
 
 class HintGenerator:
@@ -49,35 +51,28 @@ class HintGenerator:
         if self._model is not None:
             return
         manifest_p = self.adapter_dir / "manifest.json"
-        manifest = read_json(manifest_p) if manifest_p.exists() else {
-            "base_model": "openai/gpt-oss-20b"
-        }
+        if manifest_p.exists():
+            manifest = json.loads(manifest_p.read_text(encoding="utf-8"))
+        else:
+            manifest = {
+                "base_model": "openai/gpt-oss-20b",
+                "load_kind": "auto",
+            }
         from peft import PeftModel
         from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
 
-        base_name = manifest["base_model"]
-        load_kwargs: dict = {
-            "device_map": "auto",
-            "trust_remote_code": True,
-        }
-        if "gpt-oss" in base_name.lower():
-            # respectă MXFP4-ul nativ
-            load_kwargs["torch_dtype"] = "auto"
-        else:
-            from transformers import BitsAndBytesConfig
-            load_kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-            )
+        model_cfg = model_cfg_from_manifest(manifest)
+        base_name = model_cfg["base_model"]
+        _, load_kwargs = build_base_load_kwargs(model_cfg, torch_module=torch)
         base = AutoModelForCausalLM.from_pretrained(base_name, **load_kwargs)
         self._model = PeftModel.from_pretrained(base, str(self.adapter_dir))
         self._model.eval()
         self._tokenizer = AutoTokenizer.from_pretrained(
-            manifest["base_model"], trust_remote_code=True
+            base_name, trust_remote_code=True
         )
+        if self._tokenizer.pad_token is None:
+            self._tokenizer.pad_token = self._tokenizer.eos_token
 
     def generate(
         self,
@@ -122,11 +117,18 @@ class HintGenerator:
             valid_concept_ids=valid_ids,
         )
 
+        manifest_p = self.adapter_dir / "manifest.json"
+        reasoning_effort = DEFAULT_REASONING_EFFORT
+        if manifest_p.exists():
+            m = json.loads(manifest_p.read_text(encoding="utf-8"))
+            reasoning_effort = str(m.get("reasoning_effort", DEFAULT_REASONING_EFFORT))
+
         from src.stage4_finetune.data_loader import format_for_inference
         inputs = format_for_inference(
             tokenizer=self._tokenizer,
             system_prompt=sys_prompt,
             user_prompt=user_prompt,
+            reasoning_effort=reasoning_effort,
         )
         inputs = {k: v.to(self._model.device) for k, v in inputs.items()}
 
@@ -168,7 +170,9 @@ class HintGenerator:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--adapter-dir", type=Path, default=Path("models/gpt_oss_20b_pa_hints"))
+    parser.add_argument(
+        "--adapter-dir", type=Path, default=Path("models/mistral7b_instruct_pa_hints")
+    )
     parser.add_argument("--problem-id", required=True)
     parser.add_argument("--code", type=Path, required=True, help="path to failing source file")
     parser.add_argument("--verdict", default="WA")
