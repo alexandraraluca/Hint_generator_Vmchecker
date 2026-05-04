@@ -72,44 +72,102 @@ def build_dataset(
     """Return (train_ds, val_ds) with `input_ids`, `attention_mask`, `labels`."""
     from datasets import Dataset
 
-    def _encode(ex: dict[str, Any]) -> dict[str, Any]:
-        prompt_msgs = example_prompt_only(ex)
-        full_msgs = example_to_messages(ex)
+    # def _encode(ex: dict[str, Any]) -> dict[str, Any]:
+    #     prompt_msgs = example_prompt_only(ex)
+    #     full_msgs = example_to_messages(ex)
 
+    #     prompt_ids = _ids_from_template_output(
+    #         apply_chat_template_safe(
+    #             tokenizer,
+    #             prompt_msgs,
+    #             add_generation_prompt=True,
+    #             tokenize=True,
+    #             reasoning_effort=reasoning_effort,
+    #         )
+    #     )
+    #     full_ids = _ids_from_template_output(
+    #         apply_chat_template_safe(
+    #             tokenizer,
+    #             full_msgs,
+    #             add_generation_prompt=False,
+    #             tokenize=True,
+    #             reasoning_effort=reasoning_effort,
+    #         )
+    #     )
+
+    #     if len(full_ids) > max_seq_length:
+    #         overflow = len(full_ids) - max_seq_length
+    #         full_ids = full_ids[overflow:]
+    #         prompt_ids = prompt_ids[overflow:] if overflow < len(prompt_ids) else []
+
+    #     labels = list(full_ids)
+    #     for i in range(min(len(prompt_ids), len(labels))):
+    #         labels[i] = -100
+
+    #     attention_mask = [1] * len(full_ids)
+    #     return {
+    #         "input_ids": full_ids,
+    #         "attention_mask": attention_mask,
+    #         "labels": labels,
+    #     }
+
+
+    def _encode(ex: dict[str, Any]) -> dict[str, Any]:
+        # 1. Construim mesajele
+        prompt_msgs = example_prompt_only(ex)
+
+        # 2. Tokenizare prompt (fără assistant)
         prompt_ids = _ids_from_template_output(
             apply_chat_template_safe(
                 tokenizer,
                 prompt_msgs,
-                add_generation_prompt=True,
-                tokenize=True,
-                reasoning_effort=reasoning_effort,
-            )
-        )
-        full_ids = _ids_from_template_output(
-            apply_chat_template_safe(
-                tokenizer,
-                full_msgs,
-                add_generation_prompt=False,
+                add_generation_prompt=True,   # important: modelul va genera assistant
                 tokenize=True,
                 reasoning_effort=reasoning_effort,
             )
         )
 
+        # 3. Tokenizare răspuns (assistant) SEPARAT
+        assistant_ids = tokenizer(
+            ex["assistant"],
+            add_special_tokens=False
+        )["input_ids"]
+
+        # 4. Construim input-ul final
+        full_ids = prompt_ids + assistant_ids
+
+        # 5. Trunchiere (dacă e prea lung)
         if len(full_ids) > max_seq_length:
             overflow = len(full_ids) - max_seq_length
+
+            # tăiem din stânga (standard la LLM)
             full_ids = full_ids[overflow:]
-            prompt_ids = prompt_ids[overflow:] if overflow < len(prompt_ids) else []
 
-        labels = list(full_ids)
-        for i in range(min(len(prompt_ids), len(labels))):
-            labels[i] = -100
+            # ajustăm și prompt_ids (pentru labels corecte)
+            if overflow < len(prompt_ids):
+                prompt_ids = prompt_ids[overflow:]
+            else:
+                prompt_ids = []
 
+        # 6. Construim labels
+        labels = [-100] * len(prompt_ids) + assistant_ids
+
+        # în caz că s-a trunchiat assistant
+        labels = labels[-len(full_ids):]
+
+        # 7. Attention mask
         attention_mask = [1] * len(full_ids)
+
+        # 🔍 DEBUG (poți lăsa temporar)
+        if sum(l != -100 for l in labels) == 0:
+            print("WARNING: all labels masked!")
+
         return {
             "input_ids": full_ids,
             "attention_mask": attention_mask,
             "labels": labels,
         }
+
 
     def _load(p: Path) -> Dataset:
         rows = list(read_jsonl(p))
